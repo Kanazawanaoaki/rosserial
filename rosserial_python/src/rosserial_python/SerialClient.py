@@ -334,7 +334,8 @@ class SerialClient(object):
         self.read_lock = threading.RLock()
 
         self.write_lock = threading.RLock()
-        self.write_queue = queue.Queue()
+        self.write_queue = Queue()
+        self.write_alive = False
         self.write_thread = None
 
         self.lastsync = rospy.Time(0)
@@ -403,6 +404,12 @@ class SerialClient(object):
         self.requestTopics()
         self.lastsync = rospy.Time.now()
 
+        def shutdown():
+            self.txStopRequest()
+            rospy.loginfo('shutdown hook activated')
+        rospy.on_shutdown(shutdown)
+
+
     def requestTopics(self):
         """ Determine topics to subscribe/publish. """
         rospy.loginfo('Requesting topics...')
@@ -416,13 +423,15 @@ class SerialClient(object):
         self.write_queue.put(self.header + self.protocol_ver + b"\x00\x00\xff\x00\x00\xff")
 
     def txStopRequest(self):
-        """ Send stop tx request to client before the node exits. """
+        """ send stop tx request to arduino when receive SIGINT(Ctrl-c)"""
         if not self.fix_pyserial_for_test:
             with self.read_lock:
                 self.port.flushInput()
 
-        self.write_queue.put(self.header + self.protocol_ver + b"\x00\x00\xff\x0b\x00\xf4")
-        rospy.loginfo("Sending tx stop request")
+        self.write_queue.put("\xff" + self.protocol_ver + "\x00\x00\xff\x0b\x00\xf4")
+
+        # tx_stop_request is x0b
+        rospy.loginfo("Send tx stop request")
 
     def tryRead(self, length):
         try:
@@ -449,6 +458,7 @@ class SerialClient(object):
 
         # Launch write thread.
         if self.write_thread is None:
+            self.write_alive = True
             self.write_thread = threading.Thread(target=self.processWriteQueue)
             self.write_thread.daemon = True
             self.write_thread.start()
@@ -554,6 +564,11 @@ class SerialClient(object):
                 with self.write_lock:
                     self.port.flushOutput()
                 self.requestTopics()
+        self.write_thread.join()
+
+    def stopWriteThread(self):
+        # stop self.write_thread
+        self.write_alive = False
         self.write_thread.join()
 
     def setPublishSize(self, size):
@@ -774,7 +789,7 @@ class SerialClient(object):
         """
         Main loop for the thread that processes outgoing data to write to the serial port.
         """
-        while not rospy.is_shutdown():
+        while not rospy.is_shutdown() and self.write_alive:
             if self.write_queue.empty():
                 time.sleep(0.01)
             else:
