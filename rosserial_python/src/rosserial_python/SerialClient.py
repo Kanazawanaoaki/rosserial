@@ -334,7 +334,7 @@ class SerialClient(object):
         self.read_lock = threading.RLock()
 
         self.write_lock = threading.RLock()
-        self.write_queue = Queue()
+        self.write_queue = queue.Queue()
         self.write_alive = False
         self.write_thread = None
 
